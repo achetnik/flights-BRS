@@ -50,48 +50,6 @@ jobs:
             echo "months=${CURRENT},${NEXT}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Debug - test single flight search
-        run: |
-          python -c "
-          from google_flights import search_flights
-          from config import CONSENT_COOKIES, CHROME_VERSIONS
-          result = search_flights('BRS', 'AGP', '2026-04-17', cookie_str=CONSENT_COOKIES[0], chrome_version=CHROME_VERSIONS[0])
-          if result:
-              print(f'Total flights: {len(result.flights)}')
-              for f in result.flights[:5]:
-                  print(f'  name={repr(f.name)} dep={repr(f.departure)} arr={repr(f.arrival)} price={repr(f.price)} stops={repr(f.stops)}')
-              no_time = sum(1 for f in result.flights if not f.departure)
-              print(f'Flights without times: {no_time}/{len(result.flights)}')
-          else:
-              print('No result returned')
-
-          # Also try raw fetch to see what Google returns
-          from primp import Client
-          from fast_flights import FlightData, Passengers
-          from fast_flights.core import TFSData
-          tfs = TFSData.from_interface(
-              flight_data=[FlightData(date='2026-04-17', from_airport='BRS', to_airport='AGP')],
-              trip='one-way', passengers=Passengers(adults=1), seat='economy',
-          )
-          data = tfs.as_b64()
-          params = {'tfs': data.decode('utf-8'), 'hl': 'en-GB', 'tfu': 'EgQIABABIgA', 'curr': 'GBP', 'gl': 'uk'}
-          client = Client(impersonate='chrome_126', verify=False)
-          res = client.get('https://www.google.com/travel/flights', params=params,
-                          headers={'Cookie': '${CONSENT_COOKIES[0]}', 'Accept-Language': 'en-GB,en;q=0.9'})
-          print(f'HTTP status: {res.status_code}')
-          print(f'Response length: {len(res.text)}')
-          # Check for consent page
-          if 'Before you continue' in res.text or 'consent.google' in res.text:
-              print('GOT CONSENT PAGE!')
-          else:
-              print('No consent page - good')
-          # Check for flight data markers
-          if 'departure' in res.text.lower()[:10000]:
-              print('Has departure text in first 10K chars')
-          # Print first 500 chars
-          print(f'First 500 chars: {res.text[:500]}')
-          "
-
       - name: Show database status before refresh
         run: |
           if [ -f ~/.flightcache/flights.db ]; then

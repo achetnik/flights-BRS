@@ -68,16 +68,40 @@ CREATE INDEX IF NOT EXISTS idx_flights_price
 
 
 def _parse_time_to_minutes(time_str: str) -> int:
-    """Parse '6:20 AM' or '6:20 PM on Fri, Apr 17' -> minutes from midnight."""
+    """Parse flight time string to minutes from midnight.
+
+    Handles multiple formats:
+    - '6:20 PM' or '6:20 PM on Fri, Apr 17'    (12-hour, US locale)
+    - '18:20 on Fri 17 Apr'                      (24-hour, UK locale)
+    - '18:20'                                     (24-hour plain)
+    """
     if not time_str:
         return -1
     part = time_str.split(" on ")[0].strip()
+
+    # Try 12-hour formats
     for fmt in ("%I:%M %p", "%I:%M%p"):
         try:
             t = datetime.strptime(part, fmt)
             return t.hour * 60 + t.minute
         except ValueError:
             continue
+
+    # Try 24-hour format (e.g. "18:20")
+    try:
+        t = datetime.strptime(part, "%H:%M")
+        return t.hour * 60 + t.minute
+    except ValueError:
+        pass
+
+    # Try extracting HH:MM from anywhere in the string
+    import re
+    match = re.search(r'(\d{1,2}):(\d{2})', part)
+    if match:
+        h, m = int(match.group(1)), int(match.group(2))
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h * 60 + m
+
     return -1
 
 
