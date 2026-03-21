@@ -11,14 +11,14 @@ DB_PATH = CACHE_DIR / "flights.db"
 LOG_PATH = CACHE_DIR / "refresh.log"
 LOCK_PATH = CACHE_DIR / "refresh.lock"
 
-# Rate limiting — tuned to avoid Google detection
-MIN_DELAY = 3.0
-MAX_DELAY = 6.0
-DEST_PAUSE_MIN = 10
-DEST_PAUSE_MAX = 20
-BATCH_COOLDOWN = 50
-BATCH_PAUSE_MIN = 30
-BATCH_PAUSE_MAX = 60
+# Rate limiting — aggressive but safe
+MIN_DELAY = 1.5
+MAX_DELAY = 3.0
+DEST_PAUSE_MIN = 3
+DEST_PAUSE_MAX = 6
+BATCH_COOLDOWN = 100
+BATCH_PAUSE_MIN = 15
+BATCH_PAUSE_MAX = 30
 
 # Backoff on errors
 BACKOFF_INITIAL = 60

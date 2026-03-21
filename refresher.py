@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
 Flight Cache Refresher — populates flight data from Google Flights.
-
-Designed to run as a GitHub Actions cron job or locally.
-
-Usage:
-    python refresher.py --month 2026-04
-    python refresher.py --month 2026-04 --destinations AGP,CDG
+Syncs to Cloudflare D1 in real-time during rate limit pauses.
 """
 from __future__ import annotations
 
@@ -89,39 +84,33 @@ def main() -> int:
         cache.upsert_airport(code, name)
 
     is_ci = os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")
-    last_log_time = [0]
 
-    def on_progress(current, total, o, d, flight_date, direction, completed, failed):
-        import time as _t
-        pct = current / total * 100
-        msg = f"[{pct:5.1f}%] {current}/{total} | {o}->{d} {flight_date} {direction} | done={completed} fail={failed}"
-        if is_ci:
-            # In CI: print every 10th search or every 30 seconds so logs are visible
-            now = _t.time()
-            if current % 10 == 0 or current == total or (now - last_log_time[0]) > 30:
-                print(msg, flush=True)
-                last_log_time[0] = now
-        else:
-            print(f"\r  {msg}", end="", flush=True)
+    def on_progress(current, total, o, d, flight_date, direction, completed, failed, flights_found):
+        if not is_ci:
+            pct = current / total * 100
+            print(f"\r  [{pct:5.1f}%] {current}/{total} | {o}->{d} {flight_date} {direction} | "
+                  f"done={completed} fail={failed} flights={flights_found}",
+                  end="", flush=True)
 
     logger.info(f"Starting refresh: {airport} -> {len(destinations)} destinations, {args.month}")
-    start = time.time()
 
     stats = run_refresh(
         cache=cache, origin=airport, destinations=destinations,
         month=args.month, progress_callback=on_progress,
     )
 
-    elapsed = time.time() - start
-    print()
+    if not is_ci:
+        print()  # clear progress line
+
+    # Print status report
+    report = stats.report()
+    print(report, flush=True)
+    logger.info(report)
+
     db_stats = cache.get_stats()
+    print(f"\nDatabase totals: {db_stats['searches']} searches, {db_stats['flights']} flights, {db_stats['routes']} routes")
     cache.close()
 
-    logger.info(
-        f"Refresh finished in {elapsed/60:.1f} minutes. "
-        f"Completed: {stats['completed']}, Failed: {stats['failed']}. "
-        f"DB: {db_stats['searches']} searches, {db_stats['flights']} flights."
-    )
     return 0
 
 

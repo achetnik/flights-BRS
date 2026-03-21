@@ -1,4 +1,4 @@
-"""Core refresh logic — builds priority queue, executes searches, stores results."""
+"""Core refresh logic with real-time D1 sync and detailed status reporting."""
 from __future__ import annotations
 
 import calendar
@@ -6,12 +6,14 @@ import json
 import logging
 import random
 import re
-from datetime import date
+import time
+from datetime import date, datetime
 from typing import Callable, Optional
 
-from cache_db import FlightCache
+from cache_db import FlightCache, _parse_time_to_minutes
 from google_flights import search_flights
 from rate_limiter import RateLimiter, AbortError
+from sync_to_d1 import D1Client
 from config import STALENESS_TIERS, CHROME_VERSIONS, CONSENT_COOKIES
 
 logger = logging.getLogger(__name__)
@@ -60,25 +62,71 @@ def build_search_queue(cache: FlightCache, origin: str, destinations: dict, mont
     for flight_date in dates:
         dest_list = list(destinations.items())
         random.shuffle(dest_list)
-
         for dest_code, dest_name in dest_list:
             for direction in ("outbound", "return"):
                 o, d = (origin, dest_code) if direction == "outbound" else (dest_code, origin)
                 age_hours = cache.get_search_age_hours(o, d, flight_date, direction)
                 max_hours = _get_staleness_max_hours(flight_date)
-
                 if age_hours is None:
                     priority = 10.0
                 elif age_hours > max_hours:
                     priority = age_hours / max_hours
                 else:
                     priority = 0.0
-
                 if priority > 0:
                     queue.append((priority, o, d, flight_date, direction))
 
     queue.sort(key=lambda x: x[0], reverse=True)
     return queue
+
+
+class RefreshStats:
+    """Tracks detailed timing and counts for the refresh run."""
+
+    def __init__(self):
+        self.start_time = time.time()
+        self.completed = 0
+        self.failed = 0
+        self.skipped = 0
+        self.total = 0
+        self.flights_found = 0
+        self.no_results = 0
+        self.rate_limits = 0
+        self.scrape_time = 0.0
+        self.d1_sync_time = 0.0
+        self.rate_limit_wait_time = 0.0
+        self.destinations_searched = set()
+        self.dates_searched = set()
+
+    def report(self) -> str:
+        elapsed = time.time() - self.start_time
+        lines = [
+            "",
+            "=" * 60,
+            "REFRESH STATUS REPORT",
+            "=" * 60,
+            f"Total time:          {elapsed/60:.1f} minutes",
+            f"Searches completed:  {self.completed} / {self.total}",
+            f"  - With flights:    {self.completed - self.no_results}",
+            f"  - No results:      {self.no_results}",
+            f"Failed:              {self.failed}",
+            f"  - Rate limits:     {self.rate_limits}",
+            f"Skipped (fresh):     {self.skipped}",
+            f"Flights found:       {self.flights_found}",
+            f"Destinations:        {len(self.destinations_searched)}",
+            f"Dates covered:       {len(self.dates_searched)}",
+            "",
+            "TIME BREAKDOWN:",
+            f"  Scraping:          {self.scrape_time:.1f}s ({self.scrape_time/max(elapsed,1)*100:.0f}%)",
+            f"  D1 sync:           {self.d1_sync_time:.1f}s ({self.d1_sync_time/max(elapsed,1)*100:.0f}%)",
+            f"  Rate limit waits:  {self.rate_limit_wait_time:.1f}s ({self.rate_limit_wait_time/max(elapsed,1)*100:.0f}%)",
+            f"  Other overhead:    {max(0, elapsed - self.scrape_time - self.d1_sync_time - self.rate_limit_wait_time):.1f}s",
+            "",
+            f"Avg per search:      {elapsed/max(self.completed,1):.2f}s",
+            f"Avg scrape time:     {self.scrape_time/max(self.completed,1):.2f}s",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
 
 
 def run_refresh(
@@ -87,82 +135,137 @@ def run_refresh(
     destinations: dict,
     month: str,
     progress_callback: Optional[Callable] = None,
-) -> dict:
-    """Run a full refresh cycle."""
+) -> RefreshStats:
+    """Run a full refresh cycle with real-time D1 sync."""
+    import os
+
     for dest_code, dest_name in destinations.items():
         cache.upsert_route(origin, dest_code, dest_name)
 
     queue = build_search_queue(cache, origin, destinations, month)
-    total = len(queue)
+    stats = RefreshStats()
+    stats.total = len(queue)
+    stats.skipped = (len(destinations) * len(_get_month_dates(month)) * 2) - len(queue)
 
-    if total == 0:
+    if stats.total == 0:
         logger.info("Cache is fully fresh, nothing to refresh")
-        return {"completed": 0, "skipped": 0, "failed": 0, "total": 0}
+        return stats
 
-    logger.info(f"Refresh queue: {total} searches needed")
+    logger.info(f"Refresh queue: {stats.total} searches needed ({stats.skipped} skipped as fresh)")
 
     rate_limiter = RateLimiter()
     chrome_version = random.choice(CHROME_VERSIONS)
     cookie_idx = 0
-    stats = {"completed": 0, "skipped": 0, "failed": 0, "total": total}
-    last_dest = None
+
+    # Set up D1 client for real-time sync
+    d1 = D1Client()
+    if d1.is_configured:
+        logger.info("D1 real-time sync enabled")
+        d1.sync_airports_and_routes(str(cache.db_path))
+    else:
+        logger.info("D1 credentials not set — local-only mode")
+
+    is_ci = os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")
+    last_log = [0]
 
     for i, (priority, o, d, flight_date, direction) in enumerate(queue):
-        current_dest = (o, d)
-        if last_dest and current_dest != last_dest:
-            rate_limiter.destination_pause()
-        last_dest = current_dest
-
         if progress_callback:
-            progress_callback(i + 1, total, o, d, flight_date, direction, stats["completed"], stats["failed"])
+            progress_callback(i + 1, stats.total, o, d, flight_date, direction,
+                              stats.completed, stats.failed, stats.flights_found)
 
+        # Log progress in CI
+        if is_ci:
+            now = time.time()
+            if i % 10 == 0 or (now - last_log[0]) > 30:
+                elapsed = now - stats.start_time
+                print(f"[{i+1}/{stats.total}] {o}->{d} {flight_date} {direction} | "
+                      f"done={stats.completed} fail={stats.failed} flights={stats.flights_found} | "
+                      f"{elapsed/60:.1f}min elapsed", flush=True)
+                last_log[0] = now
+
+        # Rate limit wait
         try:
+            wait_start = time.time()
             rate_limiter.wait()
+            stats.rate_limit_wait_time += time.time() - wait_start
         except AbortError:
             logger.error("Refresh aborted due to too many errors")
             break
 
         cookie_str = CONSENT_COOKIES[cookie_idx % len(CONSENT_COOKIES)]
+        now_str = datetime.utcnow().isoformat()
 
+        # Scrape
+        scrape_start = time.time()
         try:
             result = search_flights(
                 from_airport=o, to_airport=d, date=flight_date,
-                max_stops=0, cookie_str=cookie_str, chrome_version=chrome_version,
+                max_stops=None,  # get ALL flights including connections
+                cookie_str=cookie_str, chrome_version=chrome_version,
             )
 
             flights = []
             if result and result.flights:
                 for f in result.flights:
+                    dep_time = f.departure or ""
+                    arr_time = f.arrival or ""
                     flights.append({
                         "airline": f.name or "",
-                        "departure": f.departure or "",
-                        "arrival": f.arrival or "",
+                        "departure": dep_time,
+                        "arrival": arr_time,
+                        "depart_minutes": _parse_time_to_minutes(dep_time),
+                        "arrive_minutes": _parse_time_to_minutes(arr_time),
                         "price": _parse_price(f.price),
                         "currency": "GBP",
                         "stops": f.stops if isinstance(f.stops, int) else 0,
                         "arrival_ahead": getattr(f, "arrival_time_ahead", "") or "",
                     })
 
-            status = "success" if flights else "no_results"
-            cache.record_search(o, d, flight_date, direction, status=status, flights=flights)
+            stats.scrape_time += time.time() - scrape_start
+            search_status = "success" if flights else "no_results"
+            stats.flights_found += len(flights)
+            if not flights:
+                stats.no_results += 1
+
+            # Save to local SQLite
+            cache.record_search(o, d, flight_date, direction, status=search_status, flights=flights)
+
+            # Sync to D1 immediately (uses rate limit pause time effectively)
+            if d1.is_configured:
+                sync_start = time.time()
+                d1.sync_search(o, d, flight_date, direction, now_str, search_status, None, flights)
+                stats.d1_sync_time += time.time() - sync_start
+
             rate_limiter.record_success()
-            stats["completed"] += 1
+            stats.completed += 1
+            stats.destinations_searched.add(d if direction == "outbound" else o)
+            stats.dates_searched.add(flight_date)
 
         except AssertionError as e:
+            stats.scrape_time += time.time() - scrape_start
             is_rate_limit = "429" in str(e)
-            logger.warning(f"Search failed {o}->{d} {flight_date} {direction}: {e}")
+            if is_rate_limit:
+                stats.rate_limits += 1
+            logger.warning(f"Failed {o}->{d} {flight_date} {direction}: {e}")
             cache.record_search(o, d, flight_date, direction,
                                 status="rate_limited" if is_rate_limit else "error", error_msg=str(e))
             rate_limiter.record_error(is_rate_limit=is_rate_limit)
-            stats["failed"] += 1
+            stats.failed += 1
             cookie_idx += 1
 
         except Exception as e:
-            logger.warning(f"Search error {o}->{d} {flight_date} {direction}: {e}")
+            stats.scrape_time += time.time() - scrape_start
+            logger.warning(f"Error {o}->{d} {flight_date} {direction}: {e}")
             cache.record_search(o, d, flight_date, direction, status="error", error_msg=str(e))
             rate_limiter.record_error()
-            stats["failed"] += 1
+            stats.failed += 1
 
     cache.cleanup_expired()
-    logger.info(f"Refresh complete: {stats['completed']} done, {stats['failed']} failed")
+
+    # Log D1 sync stats
+    if d1.is_configured:
+        d1_stats = d1.stats
+        logger.info(f"D1 sync: {d1_stats['api_calls']} calls, {d1_stats['rows_synced']} rows, "
+                     f"{d1_stats['errors']} errors, {d1_stats['time_spent']:.1f}s")
+
     return stats
