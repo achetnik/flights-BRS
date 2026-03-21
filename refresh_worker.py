@@ -159,11 +159,11 @@ def run_refresh(
     chrome_version = random.choice(CHROME_VERSIONS)
     cookie_idx = 0
 
-    # Set up D1 client for real-time sync
+    # Set up D1 client with background sync
     d1 = D1Client()
     if d1.is_configured:
-        logger.info("D1 real-time sync enabled")
         d1.sync_airports_and_routes(str(cache.db_path))
+        d1.start_background_sync()
     else:
         logger.info("D1 credentials not set — local-only mode")
 
@@ -251,11 +251,9 @@ def run_refresh(
             # Save to local SQLite
             cache.record_search(o, d, flight_date, direction, status=search_status, flights=flights)
 
-            # Sync to D1 immediately (uses rate limit pause time effectively)
+            # Queue D1 sync (runs in background, non-blocking)
             if d1.is_configured:
-                sync_start = time.time()
                 d1.sync_search(o, d, flight_date, direction, now_str, search_status, None, flights)
-                stats.d1_sync_time += time.time() - sync_start
 
             rate_limiter.record_success()
             stats.completed += 1
@@ -283,8 +281,11 @@ def run_refresh(
 
     cache.cleanup_expired()
 
-    # Log D1 sync stats
+    # Wait for background D1 sync to finish
     if d1.is_configured:
+        logger.info("Waiting for background D1 sync to complete...")
+        d1.wait_for_sync()
+        d1.stop_background_sync()
         d1_stats = d1.stats
         logger.info(f"D1 sync: {d1_stats['api_calls']} calls, {d1_stats['rows_synced']} rows, "
                      f"{d1_stats['errors']} errors, {d1_stats['time_spent']:.1f}s")
