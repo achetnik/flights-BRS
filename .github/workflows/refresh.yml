@@ -2,10 +2,8 @@ name: Nightly Flight Refresh
 
 on:
   schedule:
-    # Run at 3 AM UTC daily
     - cron: '0 3 * * *'
   workflow_dispatch:
-    # Allow manual trigger from GitHub UI
     inputs:
       month:
         description: 'Month to refresh (YYYY-MM). Leave blank for next 2 months.'
@@ -15,7 +13,7 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hour max
+    timeout-minutes: 360
 
     steps:
       - name: Checkout code
@@ -30,13 +28,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt requests
 
-      - name: Restore cache database
-        uses: actions/cache/restore@v4
+      - name: Download previous database
+        uses: dawidd6/action-download-artifact@v6
         with:
+          name: flight-database
           path: ~/.flightcache
-          key: flightcache-${{ github.repository }}-${{ github.run_id }}
-          restore-keys: |
-            flightcache-${{ github.repository }}-
+          if_no_artifact_found: warn
+          search_artifacts: true
+          workflow_conclusion: ""
 
       - name: Determine months to refresh
         id: months
@@ -44,10 +43,24 @@ jobs:
           if [ -n "${{ github.event.inputs.month }}" ]; then
             echo "months=${{ github.event.inputs.month }}" >> $GITHUB_OUTPUT
           else
-            # Refresh current month and next month
             CURRENT=$(date +%Y-%m)
             NEXT=$(date -d "+1 month" +%Y-%m 2>/dev/null || date -v+1m +%Y-%m)
             echo "months=${CURRENT},${NEXT}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Show database status before refresh
+        run: |
+          if [ -f ~/.flightcache/flights.db ]; then
+            echo "Database exists: $(du -h ~/.flightcache/flights.db | cut -f1)"
+            python -c "
+          from cache_db import FlightCache
+          c = FlightCache()
+          s = c.get_stats()
+          print(f'Searches: {s[\"searches\"]}, Flights: {s[\"flights\"]}, Routes: {s[\"routes\"]}')
+          c.close()
+          "
+          else
+            echo "No existing database — starting fresh"
           fi
 
       - name: Run refresh
@@ -58,6 +71,20 @@ jobs:
             python refresher.py --month "${MONTH}" || true
           done
 
+      - name: Show database status after refresh
+        if: always()
+        run: |
+          if [ -f ~/.flightcache/flights.db ]; then
+            echo "Database size: $(du -h ~/.flightcache/flights.db | cut -f1)"
+            python -c "
+          from cache_db import FlightCache
+          c = FlightCache()
+          s = c.get_stats()
+          print(f'Searches: {s[\"searches\"]}, Flights: {s[\"flights\"]}, Routes: {s[\"routes\"]}')
+          c.close()
+          "
+          fi
+
       - name: Sync to Cloudflare D1
         if: always()
         env:
@@ -66,17 +93,11 @@ jobs:
           CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
         run: python sync_to_d1.py
 
-      - name: Save cache database
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: ~/.flightcache
-          key: flightcache-${{ github.repository }}-${{ github.run_id }}
-
       - name: Upload database as artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: flight-database
           path: ~/.flightcache/flights.db
-          retention-days: 30
+          retention-days: 90
+          overwrite: true
