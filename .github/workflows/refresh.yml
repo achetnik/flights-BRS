@@ -50,30 +50,6 @@ jobs:
             echo "months=${CURRENT},${NEXT}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Test primp impersonations
-        run: |
-          python -c "
-          from primp import Client
-          versions = ['chrome_99','chrome_100','chrome_104','chrome_106','chrome_108','chrome_110',
-                      'chrome_116','chrome_119','chrome_120','chrome_123','chrome_124','chrome_126',
-                      'chrome_127','chrome_128','chrome_129','chrome_130','chrome_131',
-                      'safari_15_3','safari_15_5','safari_16','safari_16_5','safari_17_0',
-                      'safari_17_2_1','safari_17_4_1','safari_17_5','safari_18','safari_ipad_18',
-                      'safari_ios_16_5','safari_ios_17_2','safari_ios_17_4_1','safari_ios_18_1_1',
-                      'edge_101','edge_122','edge_127','edge_131',
-                      'okhttp_3_9','okhttp_3_11','okhttp_3_13','okhttp_3_14','okhttp_4_9','okhttp_4_10','okhttp_5']
-          import warnings, logging
-          logging.disable(logging.WARNING)
-          warnings.filterwarnings('ignore')
-          for v in versions:
-              try:
-                  c = Client(impersonate=v, verify=False)
-                  r = c.get('https://httpbin.org/get', timeout=5)
-                  print(f'{v}: OK')
-              except Exception as e:
-                  print(f'{v}: FAIL')
-          "
-
       - name: Show database status before refresh
         run: |
           if [ -f ~/.flightcache/flights.db ]; then

@@ -9,47 +9,28 @@ from config import CONSENT_COOKIES, CHROME_VERSIONS
 
 logger = logging.getLogger(__name__)
 
-# Default cookie and chrome version (overridden per-search in refresh_worker)
 _default_cookie = CONSENT_COOKIES[0]
 _default_chrome = CHROME_VERSIONS[0]
 
 
-_validated_version = None
-
-
-def _get_valid_chrome_version(preferred: str) -> str:
-    """Test a chrome version and fall back to one that works."""
-    global _validated_version
-    if _validated_version:
-        return _validated_version
-
-    from primp import Client
-    for version in [preferred] + CHROME_VERSIONS:
-        try:
-            Client(impersonate=version, verify=False)
-            _validated_version = version
-            logger.info(f"Using TLS impersonation: {version}")
-            return version
-        except Exception:
-            continue
-
-    # Last resort — use chrome_100 which is widely supported
-    _validated_version = "chrome_100"
-    return _validated_version
-
-
 def _get_patched_fetch(cookie_str: str, chrome_version: str):
-    """Create a fetch function with specific cookies and TLS fingerprint."""
+    """Create a fetch function with cookies, TLS fingerprint, and forced UK locale."""
     from primp import Client
-
-    valid_version = _get_valid_chrome_version(chrome_version)
 
     def _fetch(params):
-        client = Client(impersonate=valid_version, verify=False)
+        # Force GBP currency and UK English locale
+        params["curr"] = "GBP"
+        params["hl"] = "en-GB"
+        params["gl"] = "uk"
+
+        client = Client(impersonate=chrome_version, verify=False)
         res = client.get(
             "https://www.google.com/travel/flights",
             params=params,
-            headers={"Cookie": cookie_str},
+            headers={
+                "Cookie": cookie_str,
+                "Accept-Language": "en-GB,en;q=0.9",
+            },
         )
         assert res.status_code == 200, f"{res.status_code}"
         return res
@@ -75,7 +56,6 @@ def search_flights(
     import fast_flights.core as _core
     from fast_flights import FlightData, Passengers, get_flights
 
-    # Patch fetch with our cookies
     cookie = cookie_str or _default_cookie
     chrome = chrome_version or _default_chrome
     original_fetch = _core.fetch
