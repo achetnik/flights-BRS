@@ -32,14 +32,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt requests
 
-      - name: Download previous database
-        uses: dawidd6/action-download-artifact@v6
+      - name: Restore cache database
+        uses: actions/cache/restore@v4
         with:
-          name: flight-database
           path: ~/.flightcache
-          if_no_artifact_found: warn
-          search_artifacts: true
-          workflow_conclusion: ""
+          key: flightcache-v1
+          restore-keys: flightcache-
 
       - name: Determine months to refresh
         id: months
@@ -99,7 +97,19 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
-        run: python sync_to_d1.py
+        run: |
+          if [ -f ~/.flightcache/flights.db ]; then
+            python sync_to_d1.py
+          else
+            echo "No database to sync"
+          fi
+
+      - name: Save cache database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.flightcache
+          key: flightcache-v1-${{ github.run_id }}
 
       - name: Upload database as artifact
         uses: actions/upload-artifact@v4
