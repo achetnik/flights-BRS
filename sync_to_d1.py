@@ -7,13 +7,17 @@ import os
 import sqlite3
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 import requests
 
 logger = logging.getLogger(__name__)
 
 CF_API_BASE = "https://api.cloudflare.com/client/v4"
+D1_WORKERS = 5  # parallel D1 API calls
 
 
 class D1Client:
@@ -74,12 +78,51 @@ class D1Client:
         result = self._run(sql, params)
         return result.get("results", [])
 
+    def start_background_sync(self):
+        """Start background thread pool for async D1 syncing."""
+        self._queue = Queue()
+        self._pool = ThreadPoolExecutor(max_workers=D1_WORKERS)
+        self._bg_thread = Thread(target=self._bg_worker, daemon=True)
+        self._bg_thread.start()
+        logger.info(f"D1 background sync started ({D1_WORKERS} workers)")
+
+    def _bg_worker(self):
+        """Process sync tasks from the queue."""
+        while True:
+            task = self._queue.get()
+            if task is None:
+                self._queue.task_done()
+                break
+            try:
+                self._do_sync_search(*task)
+            except Exception as e:
+                logger.debug(f"Background sync error: {e}")
+            self._queue.task_done()
+
+    def wait_for_sync(self):
+        """Wait for all queued syncs to complete."""
+        if hasattr(self, "_queue"):
+            self._queue.join()
+
+    def stop_background_sync(self):
+        """Stop the background sync thread."""
+        if hasattr(self, "_queue"):
+            self._queue.put(None)
+            self._bg_thread.join(timeout=30)
+
     def sync_search(self, origin: str, dest: str, flight_date: str, direction: str,
                     searched_at: str, status: str, error_msg: str, flights: list):
-        """Sync a single search and its flights to D1."""
+        """Queue a search sync (runs in background if started, otherwise synchronous)."""
         if not self.is_configured:
             return
+        args = (origin, dest, flight_date, direction, searched_at, status, error_msg, flights)
+        if hasattr(self, "_queue"):
+            self._queue.put(args)
+        else:
+            self._do_sync_search(*args)
 
+    def _do_sync_search(self, origin, dest, flight_date, direction, searched_at, status, error_msg, flights):
+        """Actually sync a search and its flights to D1."""
         # Step 1: Upsert search
         self._run(
             "INSERT INTO searches(origin, destination, flight_date, direction, searched_at, status, error_message, flight_count) "
@@ -102,11 +145,11 @@ class D1Client:
         # Step 3: Delete old flights
         self._run("DELETE FROM flights WHERE search_id=?", [search_id])
 
-        # Step 4: Insert flights in batches using multi-value INSERT
+        # Step 4: Insert flights with multi-value INSERT (9 per call, 99 params)
         if not flights:
             return
 
-        CHUNK = 5  # flights per INSERT (D1 limits to ~100 bind params, 5×11=55)
+        CHUNK = 9
         for i in range(0, len(flights), CHUNK):
             chunk = flights[i:i + CHUNK]
             placeholders = ",".join(["(?,?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
