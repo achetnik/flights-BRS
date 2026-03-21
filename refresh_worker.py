@@ -90,6 +90,7 @@ class RefreshStats:
         self.skipped = 0
         self.total = 0
         self.flights_found = 0
+        self.flights_skipped_no_time = 0
         self.no_results = 0
         self.rate_limits = 0
         self.scrape_time = 0.0
@@ -113,6 +114,7 @@ class RefreshStats:
             f"  - Rate limits:     {self.rate_limits}",
             f"Skipped (fresh):     {self.skipped}",
             f"Flights found:       {self.flights_found}",
+            f"Flights skipped:     {self.flights_skipped_no_time} (no time data)",
             f"Destinations:        {len(self.destinations_searched)}",
             f"Dates covered:       {len(self.dates_searched)}",
             "",
@@ -205,21 +207,40 @@ def run_refresh(
             )
 
             flights = []
+            skipped_no_time = 0
             if result and result.flights:
                 for f in result.flights:
                     dep_time = f.departure or ""
                     arr_time = f.arrival or ""
+
+                    # Skip flights with no departure or arrival time
+                    if not dep_time or not arr_time:
+                        skipped_no_time += 1
+                        continue
+
+                    dep_mins = _parse_time_to_minutes(dep_time)
+                    arr_mins = _parse_time_to_minutes(arr_time)
+
+                    # Skip flights where time couldn't be parsed
+                    if dep_mins < 0 or arr_mins < 0:
+                        skipped_no_time += 1
+                        continue
+
                     flights.append({
                         "airline": f.name or "",
                         "departure": dep_time,
                         "arrival": arr_time,
-                        "depart_minutes": _parse_time_to_minutes(dep_time),
-                        "arrive_minutes": _parse_time_to_minutes(arr_time),
+                        "depart_minutes": dep_mins,
+                        "arrive_minutes": arr_mins,
                         "price": _parse_price(f.price),
                         "currency": "GBP",
                         "stops": f.stops if isinstance(f.stops, int) else 0,
                         "arrival_ahead": getattr(f, "arrival_time_ahead", "") or "",
                     })
+
+            if skipped_no_time:
+                stats.flights_skipped_no_time += skipped_no_time
+                logger.debug(f"Skipped {skipped_no_time} flights with no time data for {o}->{d} {flight_date}")
 
             stats.scrape_time += time.time() - scrape_start
             search_status = "success" if flights else "no_results"
