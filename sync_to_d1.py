@@ -102,16 +102,27 @@ class D1Client:
         # Step 3: Delete old flights
         self._run("DELETE FROM flights WHERE search_id=?", [search_id])
 
-        # Step 4: Insert flights one by one
-        for f in flights:
+        # Step 4: Insert flights in batches using multi-value INSERT
+        if not flights:
+            return
+
+        CHUNK = 25  # flights per INSERT statement
+        for i in range(0, len(flights), CHUNK):
+            chunk = flights[i:i + CHUNK]
+            placeholders = ",".join(["(?,?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
+            params = []
+            for f in chunk:
+                params.extend([
+                    search_id, f.get("airline", ""), f.get("departure", ""), f.get("arrival", ""),
+                    str(f.get("depart_minutes", 0)), str(f.get("arrive_minutes", 0)),
+                    str(f.get("price", 0)), f.get("currency", "GBP"), str(f.get("stops", 0)),
+                    f.get("arrival_ahead", ""), searched_at,
+                ])
             self._run(
-                "INSERT INTO flights(search_id, airline, departure_time, arrival_time, "
-                "depart_minutes, arrive_minutes, price, currency, stops, arrival_ahead, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                [search_id, f.get("airline", ""), f.get("departure", ""), f.get("arrival", ""),
-                 str(f.get("depart_minutes", 0)), str(f.get("arrive_minutes", 0)),
-                 str(f.get("price", 0)), f.get("currency", "GBP"), str(f.get("stops", 0)),
-                 f.get("arrival_ahead", ""), searched_at],
+                f"INSERT INTO flights(search_id, airline, departure_time, arrival_time, "
+                f"depart_minutes, arrive_minutes, price, currency, stops, arrival_ahead, created_at) "
+                f"VALUES {placeholders}",
+                params,
             )
 
     def sync_airports_and_routes(self, db_path: str):
