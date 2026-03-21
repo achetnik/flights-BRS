@@ -65,7 +65,11 @@ jobs:
             echo "No existing database — starting fresh"
           fi
 
-      - name: Run refresh
+      - name: Run refresh (scrapes + syncs to D1 in real-time)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
         run: |
           DEST_FLAG=""
           if [ -n "${{ github.event.inputs.destinations }}" ]; then
@@ -77,7 +81,7 @@ jobs:
             python refresher.py --month "${MONTH}" ${DEST_FLAG} || true
           done
 
-      - name: Show database status after refresh
+      - name: Show database status
         if: always()
         run: |
           if [ -f ~/.flightcache/flights.db ]; then
@@ -89,19 +93,6 @@ jobs:
           print(f'Searches: {s[\"searches\"]}, Flights: {s[\"flights\"]}, Routes: {s[\"routes\"]}')
           c.close()
           "
-          fi
-
-      - name: Sync to Cloudflare D1
-        if: always()
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
-        run: |
-          if [ -f ~/.flightcache/flights.db ]; then
-            python sync_to_d1.py
-          else
-            echo "No database to sync"
           fi
 
       - name: Save cache database
