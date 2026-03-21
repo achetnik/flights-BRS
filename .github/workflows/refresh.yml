@@ -1,0 +1,74 @@
+name: Nightly Flight Refresh
+
+on:
+  schedule:
+    # Run at 3 AM UTC daily
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    # Allow manual trigger from GitHub UI
+    inputs:
+      month:
+        description: 'Month to refresh (YYYY-MM). Leave blank for next 2 months.'
+        required: false
+        type: string
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hour max
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore cache database
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.flightcache
+          key: flightcache-${{ github.repository }}-${{ github.run_id }}
+          restore-keys: |
+            flightcache-${{ github.repository }}-
+
+      - name: Determine months to refresh
+        id: months
+        run: |
+          if [ -n "${{ github.event.inputs.month }}" ]; then
+            echo "months=${{ github.event.inputs.month }}" >> $GITHUB_OUTPUT
+          else
+            # Refresh current month and next month
+            CURRENT=$(date +%Y-%m)
+            NEXT=$(date -d "+1 month" +%Y-%m 2>/dev/null || date -v+1m +%Y-%m)
+            echo "months=${CURRENT},${NEXT}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run refresh
+        run: |
+          IFS=',' read -ra MONTHS <<< "${{ steps.months.outputs.months }}"
+          for MONTH in "${MONTHS[@]}"; do
+            echo "=== Refreshing ${MONTH} ==="
+            python refresher.py --month "${MONTH}" || true
+          done
+
+      - name: Save cache database
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ~/.flightcache
+          key: flightcache-${{ github.repository }}-${{ github.run_id }}
+
+      - name: Upload database as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flight-database
+          path: ~/.flightcache/flights.db
+          retention-days: 30
