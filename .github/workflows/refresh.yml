@@ -9,6 +9,10 @@ on:
         description: 'Month to refresh (YYYY-MM). Leave blank for next 2 months.'
         required: false
         type: string
+      destinations:
+        description: 'Comma-separated IATA codes (e.g. AGP,CDG). Leave blank for all.'
+        required: false
+        type: string
 
 jobs:
   refresh:
@@ -65,10 +69,14 @@ jobs:
 
       - name: Run refresh
         run: |
+          DEST_FLAG=""
+          if [ -n "${{ github.event.inputs.destinations }}" ]; then
+            DEST_FLAG="--destinations ${{ github.event.inputs.destinations }}"
+          fi
           IFS=',' read -ra MONTHS <<< "${{ steps.months.outputs.months }}"
           for MONTH in "${MONTHS[@]}"; do
             echo "=== Refreshing ${MONTH} ==="
-            python refresher.py --month "${MONTH}" || true
+            python refresher.py --month "${MONTH}" ${DEST_FLAG} || true
           done
 
       - name: Show database status after refresh
