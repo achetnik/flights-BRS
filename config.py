@@ -36,7 +36,8 @@ STALENESS_TIERS = [
 ]
 
 # Chrome TLS fingerprint versions for rotation
-CHROME_VERSIONS = ["chrome_126", "chrome_127", "chrome_128", "chrome_131"]
+# Only versions confirmed to work across primp 0.15 and 1.1.3
+CHROME_VERSIONS = ["chrome_100", "chrome_104", "chrome_116", "chrome_120"]
 
 # Google consent cookie sets for rotation
 CONSENT_COOKIES = [
