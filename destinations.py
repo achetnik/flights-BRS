@@ -1,30 +1,32 @@
-"""Airport destination lists for UK airports."""
+"""Bristol Airport (BRS) destinations — verified via Google Flights."""
 
 DESTINATIONS = {
     "BRS": {
         "name": "Bristol",
         "routes": {
+            "ACE": "Lanzarote",
             "AGP": "Malaga",
             "ALC": "Alicante",
-            "ACE": "Lanzarote",
-            "ATH": "Athens",
+            "AMS": "Amsterdam",
+            "AYT": "Antalya",
             "BCN": "Barcelona",
+            "BER": "Berlin",
             "BFS": "Belfast",
-            "BHD": "Belfast City",
+            "BUD": "Budapest",
             "CDG": "Paris CDG",
             "CFU": "Corfu",
             "DBV": "Dubrovnik",
+            "DLM": "Dalaman",
             "DUB": "Dublin",
             "EDI": "Edinburgh",
             "FAO": "Faro",
             "FCO": "Rome",
-            "FNC": "Funchal",
             "FUE": "Fuerteventura",
             "GLA": "Glasgow",
-            "GNB": "Grenoble",
             "GVA": "Geneva",
-            "HRG": "Hurghada",
-            "INN": "Innsbruck",
+            "HER": "Heraklion",
+            "IBZ": "Ibiza",
+            "JER": "Jersey",
             "KRK": "Krakow",
             "LIS": "Lisbon",
             "LPA": "Gran Canaria",
@@ -35,24 +37,21 @@ DESTINATIONS = {
             "PRG": "Prague",
             "RAK": "Marrakech",
             "RHO": "Rhodes",
+            "SOF": "Sofia",
             "SPU": "Split",
-            "SSH": "Sharm el Sheikh",
-            "SZG": "Salzburg",
             "TFS": "Tenerife",
-            "TIA": "Tirana",
             "VRN": "Verona",
+            "ZTH": "Zakynthos",
         },
     },
 }
 
 
 def get_destinations(airport: str) -> dict:
-    """Get the destination dict for an airport."""
     entry = DESTINATIONS.get(airport, {})
     return entry.get("routes", {})
 
 
 def get_airport_name(airport: str) -> str:
-    """Get the display name for an airport."""
     entry = DESTINATIONS.get(airport, {})
     return entry.get("name", airport)
