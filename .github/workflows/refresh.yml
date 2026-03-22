@@ -145,9 +145,19 @@ jobs:
             python export_sql.py
             DUMP_FILE="$HOME/.flightcache/d1_import.sql"
             echo "SQL dump: $(du -h "$DUMP_FILE" | cut -f1), $(wc -l < "$DUMP_FILE") lines"
-            WRANGLER_SEND_METRICS=false wrangler d1 execute flights-cache \
-              --remote \
-              --file="$DUMP_FILE" \
-              --yes
-            echo "D1 import complete for ${{ matrix.destination }}"
+            # Retry loop — D1 only allows one import at a time
+            for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
+              echo "D1 import attempt ${ATTEMPT}..."
+              if WRANGLER_SEND_METRICS=false wrangler d1 execute flights-cache \
+                --remote \
+                --file="$DUMP_FILE" \
+                --yes 2>&1; then
+                echo "D1 import complete for ${{ matrix.destination }}"
+                break
+              else
+                WAIT=$((RANDOM % 60 + 30))
+                echo "D1 busy, waiting ${WAIT}s before retry..."
+                sleep $WAIT
+              fi
+            done
           fi
