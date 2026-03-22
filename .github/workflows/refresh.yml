@@ -104,12 +104,13 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if [ -f ~/.flightcache/d1_import.sql ]; then
-            echo "SQL dump size: $(du -h ~/.flightcache/d1_import.sql | cut -f1)"
-            echo "Lines: $(wc -l < ~/.flightcache/d1_import.sql)"
+          DUMP_FILE="$HOME/.flightcache/d1_import.sql"
+          if [ -f "$DUMP_FILE" ]; then
+            echo "SQL dump size: $(du -h "$DUMP_FILE" | cut -f1)"
+            echo "Lines: $(wc -l < "$DUMP_FILE")"
             WRANGLER_SEND_METRICS=false wrangler d1 execute flights-cache \
               --remote \
-              --file=~/.flightcache/d1_import.sql \
+              --file="$DUMP_FILE" \
               --yes
             echo "D1 bulk import complete"
           else
