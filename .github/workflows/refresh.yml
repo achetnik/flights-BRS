@@ -31,7 +31,9 @@ jobs:
           - AMS
           - ATH
           - AYT
+          - BCN
           - BER
+          - BFS
           - BGO
           - BHD
           - BJV
