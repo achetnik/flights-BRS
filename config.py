@@ -22,14 +22,8 @@ BACKOFF_MULTIPLIER = 2
 BACKOFF_MAX = 600
 MAX_CONSECUTIVE_ERRORS = 5
 
-# Staleness tiers (days_until_flight -> max_cache_age_hours)
-STALENESS_TIERS = [
-    (3, 6),
-    (7, 12),
-    (14, 24),
-    (30, 48),
-    (999, 72),
-]
+# All data is refreshed on every run (no staleness tiers).
+# Prices change unpredictably at any distance.
 
 # Chrome TLS fingerprint versions for rotation
 # Only versions confirmed to work across primp 0.15 and 1.1.3

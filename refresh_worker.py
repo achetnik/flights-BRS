@@ -13,7 +13,7 @@ from typing import Callable, Optional
 from cache_db import FlightCache, _parse_time_to_minutes
 from google_flights import search_flights
 from rate_limiter import RateLimiter, AbortError
-from config import STALENESS_TIERS, CHROME_VERSIONS, CONSENT_COOKIES
+from config import CHROME_VERSIONS, CONSENT_COOKIES
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +28,6 @@ def _parse_price(price_str: str) -> float:
         return 0.0
 
 
-def _get_staleness_max_hours(flight_date_str: str) -> float:
-    try:
-        flight_date = date.fromisoformat(flight_date_str)
-        days_until = (flight_date - date.today()).days
-        for max_days, max_hours in STALENESS_TIERS:
-            if days_until <= max_days:
-                return max_hours
-        return 72
-    except ValueError:
-        return 24
-
 
 def _get_month_dates(month_str: str) -> list:
     year, month = int(month_str[:4]), int(month_str[5:7])
@@ -51,8 +40,13 @@ def _get_month_dates(month_str: str) -> list:
     ]
 
 
-def build_search_queue(cache: FlightCache, origin: str, destinations: dict, month: str) -> list:
-    """Build a prioritized, interleaved search queue."""
+def build_search_queue(origin: str, destinations: dict, month: str) -> list:
+    """Build a search queue — refreshes everything, no staleness checks.
+
+    Prices change unpredictably at any distance, so all data is
+    refreshed on every run. Destinations are shuffled per date
+    to look more human to Google.
+    """
     dates = _get_month_dates(month)
     if not dates:
         return []
@@ -64,18 +58,8 @@ def build_search_queue(cache: FlightCache, origin: str, destinations: dict, mont
         for dest_code, dest_name in dest_list:
             for direction in ("outbound", "return"):
                 o, d = (origin, dest_code) if direction == "outbound" else (dest_code, origin)
-                age_hours = cache.get_search_age_hours(o, d, flight_date, direction)
-                max_hours = _get_staleness_max_hours(flight_date)
-                if age_hours is None:
-                    priority = 10.0
-                elif age_hours > max_hours:
-                    priority = age_hours / max_hours
-                else:
-                    priority = 0.0
-                if priority > 0:
-                    queue.append((priority, o, d, flight_date, direction))
+                queue.append((o, d, flight_date, direction))
 
-    queue.sort(key=lambda x: x[0], reverse=True)
     return queue
 
 
@@ -140,32 +124,30 @@ def run_refresh(
     month: str,
     progress_callback: Optional[Callable] = None,
 ) -> RefreshStats:
-    """Run a full refresh cycle with real-time D1 sync."""
+    """Run a full refresh cycle — scrapes all flights to local SQLite."""
     import os
 
     for dest_code, dest_name in destinations.items():
         cache.upsert_route(origin, dest_code, dest_name)
 
-    queue = build_search_queue(cache, origin, destinations, month)
+    queue = build_search_queue(origin, destinations, month)
     stats = RefreshStats()
     stats.total = len(queue)
-    stats.skipped = (len(destinations) * len(_get_month_dates(month)) * 2) - len(queue)
 
     if stats.total == 0:
-        logger.info("Cache is fully fresh, nothing to refresh")
+        logger.info("No dates to search")
         return stats
 
-    logger.info(f"Refresh queue: {stats.total} searches needed ({stats.skipped} skipped as fresh)")
+    logger.info(f"Refresh queue: {stats.total} searches")
 
     rate_limiter = RateLimiter()
     chrome_version = random.choice(CHROME_VERSIONS)
     cookie_idx = 0
 
-
     is_ci = os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")
     last_log = [0]
 
-    for i, (priority, o, d, flight_date, direction) in enumerate(queue):
+    for i, (o, d, flight_date, direction) in enumerate(queue):
         if progress_callback:
             progress_callback(i + 1, stats.total, o, d, flight_date, direction,
                               stats.completed, stats.failed, stats.flights_found)
