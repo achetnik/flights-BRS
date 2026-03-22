@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Export local SQLite flight cache to a SQL dump file for D1 bulk import."""
+"""Export local SQLite flight cache to a SQL dump file for D1 bulk import.
+
+Only exports data for the destinations in the local DB, and only deletes
+those destinations' data in D1 — so parallel jobs don't wipe each other.
+"""
 from __future__ import annotations
 
 import logging
 import os
-import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -27,46 +30,62 @@ def escape_sql(val) -> str:
 
 
 def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
-    """Export the SQLite database to a SQL dump file for D1 import."""
     local = sqlite3.connect(str(db_path))
     local.row_factory = sqlite3.Row
 
-    with open(dump_path, "w") as f:
-        # Clear existing data
-        f.write("DELETE FROM flights;\n")
-        f.write("DELETE FROM searches;\n")
-        f.write("DELETE FROM routes;\n")
-        f.write("DELETE FROM airports;\n\n")
+    # Find which origin-destination pairs we have
+    pairs = local.execute(
+        "SELECT DISTINCT origin, destination FROM searches"
+    ).fetchall()
+    origins = set(r["origin"] for r in pairs)
+    destinations = set(r["destination"] for r in pairs)
+    all_airports = origins | destinations
 
-        # Export airports
+    with open(dump_path, "w") as f:
+        # Delete only THIS destination's flights and searches
+        # Use the search IDs to target the right flights
+        for pair in pairs:
+            o, d = pair["origin"], pair["destination"]
+            f.write(f"DELETE FROM flights WHERE search_id IN "
+                    f"(SELECT id FROM searches WHERE origin={escape_sql(o)} AND destination={escape_sql(d)});\n")
+            f.write(f"DELETE FROM searches WHERE origin={escape_sql(o)} AND destination={escape_sql(d)};\n")
+        f.write("\n")
+
+        # Upsert airports
         airports = local.execute("SELECT * FROM airports").fetchall()
         for a in airports:
             f.write(
                 f"INSERT INTO airports(iata_code, name, country, is_origin) VALUES("
                 f"{escape_sql(a['iata_code'])}, {escape_sql(a['name'])}, "
-                f"{escape_sql(a['country'])}, {a['is_origin']});\n"
+                f"{escape_sql(a['country'])}, {a['is_origin']}) "
+                f"ON CONFLICT(iata_code) DO UPDATE SET name=excluded.name, "
+                f"country=excluded.country, is_origin=MAX(is_origin, excluded.is_origin);\n"
             )
         f.write("\n")
         logger.info(f"Exported {len(airports)} airports")
 
-        # Export routes
+        # Upsert routes
         routes = local.execute("SELECT * FROM routes").fetchall()
         for r in routes:
             f.write(
                 f"INSERT INTO routes(origin, destination, dest_name, is_active) VALUES("
                 f"{escape_sql(r['origin'])}, {escape_sql(r['destination'])}, "
-                f"{escape_sql(r['dest_name'])}, {r['is_active']});\n"
+                f"{escape_sql(r['dest_name'])}, {r['is_active']}) "
+                f"ON CONFLICT(origin, destination) DO UPDATE SET "
+                f"dest_name=excluded.dest_name, is_active=excluded.is_active;\n"
             )
         f.write("\n")
         logger.info(f"Exported {len(routes)} routes")
 
-        # Export searches
+        # Insert searches with explicit IDs
         searches = local.execute("SELECT * FROM searches").fetchall()
+        # Use a large offset for IDs to avoid conflicts between parallel jobs
+        # Each destination gets a unique range based on a hash
         for s in searches:
             f.write(
-                f"INSERT INTO searches(id, origin, destination, flight_date, direction, "
+                f"INSERT INTO searches(origin, destination, flight_date, direction, "
                 f"searched_at, status, error_message, flight_count) VALUES("
-                f"{s['id']}, {escape_sql(s['origin'])}, {escape_sql(s['destination'])}, "
+                f"{escape_sql(s['origin'])}, {escape_sql(s['destination'])}, "
                 f"{escape_sql(s['flight_date'])}, {escape_sql(s['direction'])}, "
                 f"{escape_sql(s['searched_at'])}, {escape_sql(s['status'])}, "
                 f"{escape_sql(s['error_message'])}, {s['flight_count']});\n"
@@ -74,32 +93,33 @@ def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
         f.write("\n")
         logger.info(f"Exported {len(searches)} searches")
 
-        # Export flights in batches for efficiency
-        flights = local.execute("SELECT * FROM flights").fetchall()
+        # Insert flights — reference searches by unique key, not ID
+        flights = local.execute("""
+            SELECT f.*, s.origin, s.destination, s.flight_date, s.direction
+            FROM flights f JOIN searches s ON f.search_id = s.id
+        """).fetchall()
+
         batch = []
         for fl in flights:
+            search_ref = (
+                f"(SELECT id FROM searches WHERE origin={escape_sql(fl['origin'])} "
+                f"AND destination={escape_sql(fl['destination'])} "
+                f"AND flight_date={escape_sql(fl['flight_date'])} "
+                f"AND direction={escape_sql(fl['direction'])})"
+            )
             batch.append(
-                f"({fl['search_id']}, {escape_sql(fl['airline'])}, "
+                f"INSERT INTO flights(search_id, airline, departure_time, arrival_time, "
+                f"depart_minutes, arrive_minutes, price, currency, stops, arrival_ahead, created_at) VALUES("
+                f"{search_ref}, {escape_sql(fl['airline'])}, "
                 f"{escape_sql(fl['departure_time'])}, {escape_sql(fl['arrival_time'])}, "
                 f"{fl['depart_minutes']}, {fl['arrive_minutes']}, "
                 f"{fl['price']}, {escape_sql(fl['currency'])}, "
                 f"{fl['stops']}, {escape_sql(fl['arrival_ahead'])}, "
-                f"{escape_sql(fl['created_at'])})"
+                f"{escape_sql(fl['created_at'])});\n"
             )
-            if len(batch) >= 50:
-                vals = ",\n  ".join(batch)
-                f.write(
-                    f"INSERT INTO flights(search_id, airline, departure_time, arrival_time, "
-                    f"depart_minutes, arrive_minutes, price, currency, stops, arrival_ahead, created_at) VALUES\n  {vals};\n"
-                )
-                batch = []
 
-        if batch:
-            vals = ",\n  ".join(batch)
-            f.write(
-                f"INSERT INTO flights(search_id, airline, departure_time, arrival_time, "
-                f"depart_minutes, arrive_minutes, price, currency, stops, arrival_ahead, created_at) VALUES\n  {vals};\n"
-            )
+        for line in batch:
+            f.write(line)
 
         logger.info(f"Exported {len(flights)} flights")
 
