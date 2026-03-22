@@ -23,27 +23,29 @@ jobs:
       max-parallel: 10
       matrix:
         destination:
+          - ACE
           - AGP
           - ALC
-          - ACE
-          - ATH
+          - AMS
+          - AYT
           - BCN
+          - BER
           - BFS
-          - BHD
+          - BUD
           - CDG
           - CFU
           - DBV
+          - DLM
           - DUB
           - EDI
           - FAO
           - FCO
-          - FNC
           - FUE
           - GLA
-          - GNB
           - GVA
-          - HRG
-          - INN
+          - HER
+          - IBZ
+          - JER
           - KRK
           - LIS
           - LPA
@@ -54,12 +56,11 @@ jobs:
           - PRG
           - RAK
           - RHO
+          - SOF
           - SPU
-          - SSH
-          - SZG
           - TFS
-          - TIA
           - VRN
+          - ZTH
 
     steps:
       - name: Checkout code
