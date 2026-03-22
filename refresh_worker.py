@@ -94,6 +94,7 @@ class RefreshStats:
         self.rate_limits = 0
         self.scrape_time = 0.0
         self.rate_limit_wait_time = 0.0
+        self.rate_limiter_report = ""
         self.destinations_searched = set()
         self.dates_searched = set()
 
@@ -124,6 +125,9 @@ class RefreshStats:
             "",
             f"Avg per search:      {elapsed/max(self.completed,1):.2f}s",
             f"Avg scrape time:     {self.scrape_time/max(self.completed,1):.2f}s",
+            "",
+            "RATE LIMITER:",
+            self.rate_limiter_report or "  (no data)",
             "=" * 60,
         ]
         return "\n".join(lines)
@@ -278,5 +282,5 @@ def run_refresh(
 
     cache.cleanup_expired()
 
-
+    stats.rate_limiter_report = rate_limiter.report()
     return stats

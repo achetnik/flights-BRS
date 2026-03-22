@@ -11,14 +11,10 @@ DB_PATH = CACHE_DIR / "flights.db"
 LOG_PATH = CACHE_DIR / "refresh.log"
 LOCK_PATH = CACHE_DIR / "refresh.lock"
 
-# Rate limiting — aggressive but safe
-MIN_DELAY = 1.5
-MAX_DELAY = 3.0
-DEST_PAUSE_MIN = 3
-DEST_PAUSE_MAX = 6
-BATCH_COOLDOWN = 100
-BATCH_PAUSE_MIN = 15
-BATCH_PAUSE_MAX = 30
+# Rate limiting — adaptive (see rate_limiter.py LEVELS)
+# These are no longer used directly but kept for reference
+MIN_DELAY = 0.5
+MAX_DELAY = 1.0
 
 # Backoff on errors
 BACKOFF_INITIAL = 60
