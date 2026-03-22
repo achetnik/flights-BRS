@@ -93,7 +93,6 @@ class RefreshStats:
         self.no_results = 0
         self.rate_limits = 0
         self.scrape_time = 0.0
-        self.d1_sync_time = 0.0
         self.rate_limit_wait_time = 0.0
         self.destinations_searched = set()
         self.dates_searched = set()
@@ -119,9 +118,9 @@ class RefreshStats:
             "",
             "TIME BREAKDOWN:",
             f"  Scraping:          {self.scrape_time:.1f}s ({self.scrape_time/max(elapsed,1)*100:.0f}%)",
-            f"  D1 sync:           {self.d1_sync_time:.1f}s ({self.d1_sync_time/max(elapsed,1)*100:.0f}%)",
             f"  Rate limit waits:  {self.rate_limit_wait_time:.1f}s ({self.rate_limit_wait_time/max(elapsed,1)*100:.0f}%)",
-            f"  Other overhead:    {max(0, elapsed - self.scrape_time - self.d1_sync_time - self.rate_limit_wait_time):.1f}s",
+            f"  Other overhead:    {max(0, elapsed - self.scrape_time - self.rate_limit_wait_time):.1f}s",
+            f"  (D1 sync via wrangler bulk import — separate step)",
             "",
             f"Avg per search:      {elapsed/max(self.completed,1):.2f}s",
             f"Avg scrape time:     {self.scrape_time/max(self.completed,1):.2f}s",
