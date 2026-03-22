@@ -242,21 +242,8 @@ def run_refresh(
                         "arrival_ahead": arrival_ahead,
                     })
 
-            if skipped_no_time:
-                stats.flights_skipped_no_time += skipped_no_time
-            if skipped_filtered:
-                stats.flights_filtered += skipped_filtered
-                # Log details of first skipped flight for debugging
-                if result and result.flights:
-                    for f in result.flights:
-                        if not (f.departure or "") or not (f.arrival or ""):
-                            logger.warning(
-                                f"Flight missing time: {o}->{d} {flight_date} | "
-                                f"name={repr(f.name)} dep={repr(f.departure)} arr={repr(f.arrival)} "
-                                f"price={repr(f.price)} stops={f.stops} is_best={f.is_best}"
-                            )
-                            break
-                logger.info(f"Skipped {skipped_no_time}/{skipped_no_time + len(flights)} flights (no time) for {o}->{d} {flight_date}")
+            stats.flights_skipped_no_time += skipped_no_time
+            stats.flights_filtered += skipped_filtered
 
             stats.scrape_time += time.time() - scrape_start
             search_status = "success" if flights else "no_results"
