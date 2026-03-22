@@ -2,22 +2,64 @@ name: Nightly Flight Refresh
 
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
-      month:
-        description: 'Month to refresh (YYYY-MM). Leave blank for next 2 months.'
-        required: false
-        type: string
       destinations:
         description: 'Comma-separated IATA codes (e.g. AGP,CDG). Leave blank for all.'
         required: false
         type: string
+      months_ahead:
+        description: 'Number of months ahead to search (default: 12)'
+        required: false
+        type: string
 
 jobs:
-  refresh:
+  scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        destination:
+          - AGP
+          - ALC
+          - ACE
+          - ATH
+          - BCN
+          - BFS
+          - BHD
+          - CDG
+          - CFU
+          - DBV
+          - DUB
+          - EDI
+          - FAO
+          - FCO
+          - FNC
+          - FUE
+          - GLA
+          - GNB
+          - GVA
+          - HRG
+          - INN
+          - KRK
+          - LIS
+          - LPA
+          - MLA
+          - NCL
+          - PFO
+          - PMI
+          - PRG
+          - RAK
+          - RHO
+          - SPU
+          - SSH
+          - SZG
+          - TFS
+          - TIA
+          - VRN
 
     steps:
       - name: Checkout code
@@ -35,53 +77,52 @@ jobs:
       - name: Install wrangler
         run: npm install -g wrangler
 
-      - name: Restore cache database
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.flightcache
-          key: flightcache-v1
-          restore-keys: flightcache-
+      - name: Random startup delay
+        if: github.event_name == 'schedule'
+        run: |
+          # Stagger jobs 0-180 min (across 2am-5am window)
+          DELAY=$((RANDOM % 10800))
+          echo "Delaying ${DELAY}s ($(($DELAY / 60))min) to stagger requests..."
+          sleep $DELAY
 
-      - name: Determine months to refresh
+      - name: Check if destination is in filter
+        if: github.event.inputs.destinations != ''
+        id: filter
+        run: |
+          DESTS="${{ github.event.inputs.destinations }}"
+          DEST="${{ matrix.destination }}"
+          if echo "$DESTS" | tr ',' '\n' | grep -q "^${DEST}$"; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate month list
+        if: steps.filter.outputs.skip != 'true'
         id: months
         run: |
-          if [ -n "${{ github.event.inputs.month }}" ]; then
-            echo "months=${{ github.event.inputs.month }}" >> $GITHUB_OUTPUT
-          else
-            CURRENT=$(date +%Y-%m)
-            NEXT=$(date -d "+1 month" +%Y-%m 2>/dev/null || date -v+1m +%Y-%m)
-            echo "months=${CURRENT},${NEXT}" >> $GITHUB_OUTPUT
-          fi
+          MONTHS_AHEAD="${{ github.event.inputs.months_ahead }}"
+          MONTHS_AHEAD="${MONTHS_AHEAD:-12}"
+          MONTH_LIST=""
+          for i in $(seq 0 $((MONTHS_AHEAD - 1))); do
+            M=$(date -d "+${i} month" +%Y-%m 2>/dev/null || date -v+${i}m +%Y-%m)
+            MONTH_LIST="${MONTH_LIST}${M},"
+          done
+          MONTH_LIST="${MONTH_LIST%,}"
+          echo "months=$MONTH_LIST" >> $GITHUB_OUTPUT
+          echo "Months to scrape: $MONTH_LIST"
 
-      - name: Show database status before refresh
+      - name: Scrape ${{ matrix.destination }}
+        if: steps.filter.outputs.skip != 'true'
         run: |
-          if [ -f ~/.flightcache/flights.db ]; then
-            echo "Database exists: $(du -h ~/.flightcache/flights.db | cut -f1)"
-            python -c "
-          from cache_db import FlightCache
-          c = FlightCache()
-          s = c.get_stats()
-          print(f'Searches: {s[\"searches\"]}, Flights: {s[\"flights\"]}, Routes: {s[\"routes\"]}')
-          c.close()
-          "
-          else
-            echo "No existing database — starting fresh"
-          fi
-
-      - name: Scrape Google Flights
-        run: |
-          DEST_FLAG=""
-          if [ -n "${{ github.event.inputs.destinations }}" ]; then
-            DEST_FLAG="--destinations ${{ github.event.inputs.destinations }}"
-          fi
           IFS=',' read -ra MONTHS <<< "${{ steps.months.outputs.months }}"
           for MONTH in "${MONTHS[@]}"; do
-            echo "=== Refreshing ${MONTH} ==="
-            python refresher.py --month "${MONTH}" ${DEST_FLAG} || true
+            echo "=== ${{ matrix.destination }} ${MONTH} ==="
+            python refresher.py --month "${MONTH}" --destinations "${{ matrix.destination }}" || true
           done
 
-      - name: Show database status after scrape
-        if: always()
+      - name: Show results
+        if: always() && steps.filter.outputs.skip != 'true'
         run: |
           if [ -f ~/.flightcache/flights.db ]; then
             echo "Database size: $(du -h ~/.flightcache/flights.db | cut -f1)"
@@ -94,43 +135,19 @@ jobs:
           "
           fi
 
-      - name: Export SQL dump
-        if: always()
-        run: python export_sql.py
-
-      - name: Bulk import to Cloudflare D1
-        if: always()
+      - name: Export and import to D1
+        if: always() && steps.filter.outputs.skip != 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          DUMP_FILE="$HOME/.flightcache/d1_import.sql"
-          if [ -f "$DUMP_FILE" ]; then
-            echo "SQL dump size: $(du -h "$DUMP_FILE" | cut -f1)"
-            echo "Lines: $(wc -l < "$DUMP_FILE")"
+          if [ -f ~/.flightcache/flights.db ]; then
+            python export_sql.py
+            DUMP_FILE="$HOME/.flightcache/d1_import.sql"
+            echo "SQL dump: $(du -h "$DUMP_FILE" | cut -f1), $(wc -l < "$DUMP_FILE") lines"
             WRANGLER_SEND_METRICS=false wrangler d1 execute flights-cache \
               --remote \
               --file="$DUMP_FILE" \
               --yes
-            echo "D1 bulk import complete"
-          else
-            echo "No SQL dump to import"
+            echo "D1 import complete for ${{ matrix.destination }}"
           fi
-
-      - name: Save cache database
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.flightcache
-          key: flightcache-v1-${{ github.run_id }}
-
-      - name: Upload database as artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: flight-database
-          path: |
-            ~/.flightcache/flights.db
-            ~/.flightcache/d1_import.sql
-          retention-days: 90
-          overwrite: true
