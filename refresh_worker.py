@@ -220,8 +220,8 @@ def run_refresh(
                         skipped_filtered += 1
                         continue
 
-                    # For outbound: only keep flights arriving before noon
-                    if direction == "outbound" and arr_mins >= 720:
+                    # For outbound: only keep flights departing before noon
+                    if direction == "outbound" and dep_mins >= 720:
                         skipped_filtered += 1
                         continue
 
