@@ -110,8 +110,12 @@ def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
         return dump_path
 
     with open(dump_path, "w") as f:
-        # Ensure index exists for fast deletes
-        f.write("CREATE INDEX IF NOT EXISTS idx_flights_search_id ON flights(search_id);\n\n")
+        # Ensure indexes and history table exist
+        f.write("CREATE INDEX IF NOT EXISTS idx_flights_search_id ON flights(search_id);\n")
+        f.write("CREATE TABLE IF NOT EXISTS price_history (\n"
+                "  id INTEGER PRIMARY KEY, origin TEXT, destination TEXT, flight_date TEXT,\n"
+                "  direction TEXT, airline TEXT, departure_time TEXT, arrival_time TEXT,\n"
+                "  price REAL, currency TEXT DEFAULT 'GBP', recorded_at TEXT\n);\n\n")
 
         # Upsert airports
         airports = local.execute("SELECT * FROM airports").fetchall()
@@ -139,8 +143,28 @@ def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
         logger.info(f"Exported {len(routes)} routes")
 
         # Only delete and re-insert CHANGED searches
+        history_count = 0
         for s in changed_searches:
             o, d, fd = s["origin"], s["destination"], s["flight_date"]
+            direction = s["direction"]
+            searched_at = s["searched_at"]
+
+            # Get flights for this search
+            flights = local.execute("""
+                SELECT f.* FROM flights f WHERE f.search_id = ?
+            """, (s["id"],)).fetchall()
+
+            # Log new prices to price_history (append-only, never deleted)
+            for fl in flights:
+                f.write(
+                    f"INSERT INTO price_history(origin, destination, flight_date, direction, "
+                    f"airline, departure_time, arrival_time, price, currency, recorded_at) VALUES("
+                    f"{escape_sql(o)}, {escape_sql(d)}, {escape_sql(fd)}, {escape_sql(direction)}, "
+                    f"{escape_sql(fl['airline'])}, {escape_sql(fl['departure_time'])}, "
+                    f"{escape_sql(fl['arrival_time'])}, {fl['price']}, "
+                    f"{escape_sql(fl['currency'])}, {escape_sql(searched_at)});\n"
+                )
+                history_count += 1
 
             # Delete old data for this specific search
             f.write(f"DELETE FROM flights WHERE search_id IN "
@@ -161,11 +185,6 @@ def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
                 f"{escape_sql(content_hash)});\n"
             )
             exported_searches += 1
-
-            # Insert flights for this search
-            flights = local.execute("""
-                SELECT f.* FROM flights f WHERE f.search_id = ?
-            """, (s["id"],)).fetchall()
 
             search_ref = (
                 f"(SELECT id FROM searches WHERE origin={escape_sql(s['origin'])} "
@@ -192,7 +211,7 @@ def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
 
     local.close()
     size_kb = dump_path.stat().st_size / 1024
-    logger.info(f"Exported {exported_searches} searches, {exported_flights} flights ({size_kb:.0f} KB)")
+    logger.info(f"Exported {exported_searches} searches, {exported_flights} flights, {history_count} price history records ({size_kb:.0f} KB)")
     logger.info(f"Skipped {skipped_unchanged} unchanged searches")
     return dump_path
 
