@@ -271,24 +271,80 @@ def run_refresh(
             stats.destinations_searched.add(d if direction == "outbound" else o)
             stats.dates_searched.add(flight_date)
 
-        except AssertionError as e:
+        except (AssertionError, Exception) as e:
             stats.scrape_time += time.time() - scrape_start
-            is_rate_limit = "429" in str(e)
+            is_rate_limit = "429" in str(e) or "503" in str(e)
             if is_rate_limit:
                 stats.rate_limits += 1
             logger.warning(f"Failed {o}->{d} {flight_date} {direction}: {e}")
-            cache.record_search(o, d, flight_date, direction,
-                                status="rate_limited" if is_rate_limit else "error", error_msg=str(e))
             rate_limiter.record_error(is_rate_limit=is_rate_limit)
-            stats.failed += 1
             cookie_idx += 1
 
-        except Exception as e:
-            stats.scrape_time += time.time() - scrape_start
-            logger.warning(f"Error {o}->{d} {flight_date} {direction}: {e}")
-            cache.record_search(o, d, flight_date, direction, status="error", error_msg=str(e))
-            rate_limiter.record_error()
-            stats.failed += 1
+            # Retry once after backoff
+            logger.info(f"Retrying {o}->{d} {flight_date} {direction}...")
+            try:
+                rate_limiter.wait()
+                retry_start = time.time()
+                retry_cookie = CONSENT_COOKIES[cookie_idx % len(CONSENT_COOKIES)]
+                result = search_flights(
+                    from_airport=o, to_airport=d, date=flight_date,
+                    max_stops=0, cookie_str=retry_cookie, chrome_version=chrome_version,
+                )
+                flights = []
+                skipped_no_time = 0
+                skipped_filtered = 0
+                if result and result.flights:
+                    for f in result.flights:
+                        dep_time = f.departure or ""
+                        arr_time = f.arrival or ""
+                        if not dep_time or not arr_time:
+                            skipped_no_time += 1
+                            continue
+                        dep_mins = _parse_time_to_minutes(dep_time)
+                        arr_mins = _parse_time_to_minutes(arr_time)
+                        if dep_mins < 0 or arr_mins < 0:
+                            skipped_no_time += 1
+                            continue
+                        stops = f.stops if isinstance(f.stops, int) else 0
+                        if stops > 0:
+                            skipped_filtered += 1
+                            continue
+                        arrival_ahead = getattr(f, "arrival_time_ahead", "") or ""
+                        if arrival_ahead and arrival_ahead != "0":
+                            skipped_filtered += 1
+                            continue
+                        if direction == "outbound" and dep_mins >= 720:
+                            skipped_filtered += 1
+                            continue
+                        if direction == "return" and dep_mins < 720:
+                            skipped_filtered += 1
+                            continue
+                        flights.append({
+                            "airline": f.name or "", "departure": dep_time, "arrival": arr_time,
+                            "depart_minutes": dep_mins, "arrive_minutes": arr_mins,
+                            "price": _parse_price(f.price), "currency": "GBP",
+                            "stops": stops, "arrival_ahead": arrival_ahead,
+                        })
+                seen_flights = set()
+                unique_flights = []
+                for fl in flights:
+                    key = (fl["airline"], fl["departure"], fl["arrival"], fl["price"])
+                    if key not in seen_flights:
+                        seen_flights.add(key)
+                        unique_flights.append(fl)
+                flights = unique_flights
+
+                stats.scrape_time += time.time() - retry_start
+                search_status = "success" if flights else "no_results"
+                stats.flights_found += len(flights)
+                cache.record_search(o, d, flight_date, direction, status=search_status, flights=flights)
+                rate_limiter.record_success()
+                stats.completed += 1
+                logger.info(f"Retry succeeded: {o}->{d} {flight_date} {direction} ({len(flights)} flights)")
+            except Exception as retry_e:
+                logger.warning(f"Retry also failed: {o}->{d} {flight_date} {direction}: {retry_e}")
+                cache.record_search(o, d, flight_date, direction, status="error", error_msg=str(e))
+                stats.failed += 1
 
     cache.cleanup_expired()
 
