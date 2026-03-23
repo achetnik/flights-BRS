@@ -82,6 +82,9 @@ def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
         return dump_path
 
     with open(dump_path, "w") as f:
+        # Ensure index exists for fast deletes
+        f.write("CREATE INDEX IF NOT EXISTS idx_flights_search_id ON flights(search_id);\n\n")
+
         # Upsert airports
         airports = local.execute("SELECT * FROM airports").fetchall()
         for a in airports:
