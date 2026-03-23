@@ -157,14 +157,6 @@ jobs:
       - name: Install wrangler
         run: npm install -g wrangler
 
-      - name: Random startup delay
-        if: github.event_name == 'schedule'
-        run: |
-          # Stagger jobs 0-180 min (across 2am-5am window)
-          DELAY=$((RANDOM % 10800))
-          echo "Delaying ${DELAY}s ($(($DELAY / 60))min) to stagger requests..."
-          sleep $DELAY
-
       - name: Check if destination is in filter
         if: github.event.inputs.destinations != ''
         id: filter
