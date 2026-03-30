@@ -111,6 +111,33 @@ def main() -> int:
     print(f"\nDatabase totals: {db_stats['searches']} searches, {db_stats['flights']} flights, {db_stats['routes']} routes")
     cache.close()
 
+    # Output stats as JSON for CI to capture
+    elapsed = time.time() - stats.start_time
+    stats_json = {
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(stats.start_time)),
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+        "duration_secs": round(elapsed, 1),
+        "total": stats.total,
+        "completed": stats.completed,
+        "failed": stats.failed,
+        "no_results": stats.no_results,
+        "flights_found": stats.flights_found,
+        "flights_filtered": stats.flights_filtered,
+        "flights_skipped_no_time": stats.flights_skipped_no_time,
+        "rate_limits": stats.rate_limits,
+        "scrape_time": round(stats.scrape_time, 1),
+        "rate_limit_wait_time": round(stats.rate_limit_wait_time, 1),
+        "unchanged": stats.unchanged,
+        "destinations_searched": len(stats.destinations_searched),
+        "dates_searched": len(stats.dates_searched),
+        "avg_per_search": round(elapsed / max(stats.completed, 1), 2),
+        "avg_scrape_time": round(stats.scrape_time / max(stats.completed, 1), 2),
+    }
+    import json
+    stats_path = CACHE_DIR / "last_stats.json"
+    stats_path.write_text(json.dumps(stats_json))
+    print(f"\nStats written to {stats_path}")
+
     return 0
 
 
