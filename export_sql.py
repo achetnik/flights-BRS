@@ -133,11 +133,11 @@ def export(db_path: Path = DB_PATH, dump_path: Path = DUMP_PATH) -> Path:
         routes = local.execute("SELECT * FROM routes").fetchall()
         for r in routes:
             f.write(
-                f"INSERT INTO routes(origin, destination, dest_name, is_active) VALUES("
+                f"INSERT INTO routes(origin, destination, dest_name, is_active, last_scraped) VALUES("
                 f"{escape_sql(r['origin'])}, {escape_sql(r['destination'])}, "
-                f"{escape_sql(r['dest_name'])}, {r['is_active']}) "
+                f"{escape_sql(r['dest_name'])}, {r['is_active']}, datetime('now')) "
                 f"ON CONFLICT(origin, destination) DO UPDATE SET "
-                f"dest_name=excluded.dest_name, is_active=excluded.is_active;\n"
+                f"dest_name=excluded.dest_name, is_active=excluded.is_active, last_scraped=datetime('now');\n"
             )
         f.write("\n")
         logger.info(f"Exported {len(routes)} routes")
